@@ -59,7 +59,7 @@ def get_client_by_id(client_id: str = Path(..., description="Client UUID")):
     Vraća jednog klijenta po ID (UUID iz kolone 'id').
     """
     try:
-        res = supabase.table("clients").select("*").eq("id", client_id).single().execute()
+        res = supabase.table("clients").select("*").eq("id", client_id).maybe_single().execute()
         if not res.data:
             raise HTTPException(status_code=404, detail="Client not found")
         return res.data
@@ -75,10 +75,13 @@ def delete_client(client_id: str = Path(..., description="Client UUID")):
     Briše klijenta po ID (UUID).
     """
     try:
-        res = supabase.table("clients").delete().eq("id", client_id).execute()
-        # Supabase može vratiti [] ako ništa nije obrisano
-        if (not res.data) and (getattr(res, "count", 0) in (0, None)):
+        # prvo provjeri postoji li klijent
+        exists = supabase.table("clients").select("id").eq("id", client_id).maybe_single().execute()
+        if not exists.data:
             raise HTTPException(status_code=404, detail="Client not found")
+
+        # ako postoji, izbriši ga
+        res = supabase.table("clients").delete().eq("id", client_id).execute()
         return {"message": "Client deleted"}
     except HTTPException:
         raise
