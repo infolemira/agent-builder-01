@@ -1,5 +1,7 @@
 fastapi
-uvicorn[standard]
+uvicorn
 supabase
 python-dotenv
 pydantic
+requests
+email-validator
