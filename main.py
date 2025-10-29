@@ -1,14 +1,12 @@
-from fastapi import FastAPI
-from supabase_service import supabase
-from schemas import ClientIn
+# GET ruta za dohvaćanje svih klijenata
+from fastapi import HTTPException
 
-app = FastAPI()
-
-@app.get('/health')
-def health():
-    return {'ok': True, 'msg': 'API radi'}
-
-@app.post('/api/v1/clients')
-def add_client(data: ClientIn):
-    res = supabase.table('clients').insert(data.model_dump()).execute()
-    return res.data
+@app.get("/api/v1/clients", tags=["Clients"])
+def get_clients():
+    try:
+        response = supabase.table("clients").select("*").execute()
+        if not response.data:
+            return {"message": "No clients found"}
+        return response.data
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
