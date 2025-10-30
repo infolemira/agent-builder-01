@@ -1,89 +1,171 @@
 # main.py
-from typing import List, Optional
+import os
+from typing import Dict, Any, Optional
 
-from fastapi import FastAPI, HTTPException, Path
-from pydantic import BaseModel, EmailStr
+from fastapi import FastAPI, Depends, Header, HTTPException, status
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
-from supabase_service import supabase
+from schemas import ItemCreate, ItemUpdate, LoginPayload, SignupPayload
+from supabase_service import get_supabase, get_user_from_token
+
+app = FastAPI(title="Agent Builder 01 — FastAPI + Supabase")
+
+# -----------------------------------
+# CORS (omogućava pozive s frontenda)
+# -----------------------------------
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # promijeni kasnije ako imaš svoj frontend
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# -----------------------------------
+# Helpers
+# -----------------------------------
+async def get_bearer_token(authorization: Optional[str] = Header(default=None)) -> str:
+    if not authorization:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing Authorization header")
+    lower = authorization.lower().strip()
+    if not lower.startswith("bearer "):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid Authorization header")
+    token = authorization.split(" ", 1)[1].strip()
+    if not token:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Empty bearer token")
+    return token
 
 
-# ---------- Pydantic modeli ----------
-class ClientIn(BaseModel):
-    name: str
-    email: EmailStr
+async def require_user(token: str = Depends(get_bearer_token)) -> Dict[str, Any]:
+    user = await get_user_from_token(token)
+    if not user:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired token")
+    return {"token": token, "user": user}
 
 
-# ---------- FastAPI app ----------
-app = FastAPI(title="FastAPI", version="1.0.0")
+# -----------------------------------
+# Health check
+# -----------------------------------
+@app.get("/health")
+async def health():
+    return {"ok": True}
 
 
-# ---------- Health ----------
-@app.get("/health", tags=["Health"])
-def health_check():
-    return {"ok": True, "msg": "API radi"}
-
-
-# ---------- Clients ----------
-@app.post("/api/v1/clients", tags=["Clients"])
-def add_client(client: ClientIn):
-    """
-    Kreira novog klijenta u tablici 'clients'.
-    Očekuje JSON tijelo: { "name": "...", "email": "..." }
-    """
+# -----------------------------------
+# AUTH — Signup & Login
+# -----------------------------------
+@app.post("/auth/signup")
+async def signup(body: SignupPayload):
+    sb = get_supabase()
     try:
-        payload = client.model_dump()
-        res = supabase.table("clients").insert(payload).execute()
-        if not res.data:
-            raise HTTPException(status_code=500, detail="Insert failed")
-        # vraćamo prvi kreirani red
-        return res.data[0]
+        res = await sb.auth.sign_up({"email": body.email, "password": body.password})
+        return {"user": getattr(res, "user", None)}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e))
 
 
-@app.get("/api/v1/clients", tags=["Clients"])
-def get_clients():
-    """
-    Vraća sve klijente.
-    """
+@app.post("/auth/login")
+async def login(body: LoginPayload):
+    sb = get_supabase()
     try:
-        res = supabase.table("clients").select("*").order("created_at", desc=True).execute()
-        return res.data or []
+        res = await sb.auth.sign_in_with_password({"email": body.email, "password": body.password})
+        session = getattr(res, "session", None)
+        if not session or not session.get("access_token"):
+            raise HTTPException(status_code=401, detail="Invalid credentials")
+        return {
+            "access_token": session["access_token"],
+            "token_type": "bearer",
+            "expires_in": session.get("expires_in"),
+            "user": res.user,
+        }
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=401, detail=str(e))
 
 
-@app.get("/api/v1/clients/{client_id}", tags=["Clients"])
-def get_client_by_id(client_id: str = Path(..., description="Client UUID")):
-    """
-    Vraća jednog klijenta po ID (UUID iz kolone 'id').
-    """
+# -----------------------------------
+# ITEMS — Create
+# -----------------------------------
+@app.post("/items")
+async def create_item(body: ItemCreate, ctx=Depends(require_user)):
+    token: str = ctx["token"]
+    user = ctx["user"]
+    user_id = user.id
+
+    sb = get_supabase(token)
+    payload = {
+        "user_id": user_id,
+        "title": body.title,
+        "description": body.description,
+        "done": body.done,
+    }
     try:
-        res = supabase.table("clients").select("*").eq("id", client_id).maybe_single().execute()
+        res = await sb.table("items").insert(payload).select("*").single().execute()
+        return JSONResponse(content=res.data, status_code=201)
+    except Exception as e:
+        raise HTTPException(status_code=403, detail=str(e))
+
+
+# -----------------------------------
+# ITEMS — List (vraća samo vlastite redove)
+# -----------------------------------
+@app.get("/items")
+async def list_items(ctx=Depends(require_user)):
+    token: str = ctx["token"]
+    sb = get_supabase(token)
+    try:
+        res = await sb.table("items").select("*").order("created_at", desc=True).execute()
+        return res.data
+    except Exception as e:
+        raise HTTPException(status_code=403, detail=str(e))
+
+
+# -----------------------------------
+# ITEMS — Update
+# -----------------------------------
+@app.patch("/items/{item_id}")
+async def update_item(item_id: str, body: ItemUpdate, ctx=Depends(require_user)):
+    token: str = ctx["token"]
+    patch: Dict[str, Any] = {k: v for k, v in body.model_dump().items() if v is not None}
+    if not patch:
+        raise HTTPException(status_code=400, detail="Nothing to update")
+
+    sb = get_supabase(token)
+    try:
+        res = await sb.table("items").update(patch).eq("id", item_id).select("*").maybe_single().execute()
         if not res.data:
-            raise HTTPException(status_code=404, detail="Client not found")
+            raise HTTPException(status_code=404, detail="Item not found or not authorized")
         return res.data
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=403, detail=str(e))
 
 
-@app.delete("/api/v1/clients/{client_id}", tags=["Clients"])
-def delete_client(client_id: str = Path(..., description="Client UUID")):
-    """
-    Briše klijenta po ID (UUID).
-    """
+# -----------------------------------
+# ITEMS — Delete
+# -----------------------------------
+@app.delete("/items/{item_id}")
+async def delete_item(item_id: str, ctx=Depends(require_user)):
+    token: str = ctx["token"]
+    sb = get_supabase(token)
     try:
-        # prvo provjeri postoji li klijent
-        exists = supabase.table("clients").select("id").eq("id", client_id).maybe_single().execute()
-        if not exists.data:
-            raise HTTPException(status_code=404, detail="Client not found")
-
-        # ako postoji, izbriši ga
-        res = supabase.table("clients").delete().eq("id", client_id).execute()
-        return {"message": "Client deleted"}
+        res = await sb.table("items").delete().eq("id", item_id).select("id").maybe_single().execute()
+        if not res.data:
+            raise HTTPException(status_code=404, detail="Item not found or not authorized")
+        return {"deleted_id": res.data["id"]}
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=403, detail=str(e))
+
+
+# -----------------------------------
+# Lokalno pokretanje (za test)
+# -----------------------------------
+if __name__ == "__main__":
+    import uvicorn
+    port = int(os.getenv("PORT", "8000"))
+    uvicorn.run("main:app", host="0.0.0.0", port=port, reload=True)
