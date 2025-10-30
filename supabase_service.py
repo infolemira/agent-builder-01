@@ -2,7 +2,7 @@
 import os
 from typing import Optional
 from dotenv import load_dotenv
-from supabase import create_client, Client
+from supabase.client import create_client, Client  # <- OVDJE JE BITNA PROMJENA
 
 # učitaj .env varijable
 load_dotenv()
@@ -20,13 +20,13 @@ def get_supabase(token: Optional[str] = None) -> Client:
     """
     client: Client = create_client(SUPABASE_URL, SUPABASE_ANON_KEY)
     if token:
-        client.postgrest.auth(token)  # postavlja korisnički JWT na PostgREST sloj
+        client.postgrest.auth(token)
     return client
 
 async def get_user_from_token(token: str):
     """
     Dohvaća Supabase korisnika na temelju JWT tokena.
     """
-    client = get_supabase()
-    res = await client.auth.get_user(token)
+    sb = get_supabase()
+    res = await sb.auth.get_user(token)
     return res.user if hasattr(res, "user") else None
