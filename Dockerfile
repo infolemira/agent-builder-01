@@ -6,18 +6,18 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-# Kopiraj requirements i instaliraj (bolji cache)
+# 1️⃣  prvo requirements.txt (bolji cache)
 COPY requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r /app/requirements.txt
 
-# Kopiraj ostatak
+# 2️⃣  zatim ostatak koda
 COPY . /app
 
-# Render daje dinamički $PORT — ne hardcodamo 8000
+# 3️⃣  postavi environment varijable
 ENV PYTHONUNBUFFERED=1
+ENV PORT=8000
 
-# Expose je informativan; Render svejedno koristi $PORT
 EXPOSE 8000
 
-# Start (sluša na $PORT koji Render postavi)
-CMD ["python", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "${PORT}"]
+# 4️⃣  ključna razlika — koristi "sh -c" da Render ispravno proširi $PORT
+CMD sh -c "python -m uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}"
