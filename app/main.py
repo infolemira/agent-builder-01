@@ -1,12 +1,23 @@
 # app/main.py
 from fastapi import FastAPI, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from typing import Optional
+
 from supabase_service import supabase
 from app.auth import get_current_user, AuthedUser
-from app.history import router as history_router
-from app.ai import router as ai_router
+
+# (Ako postoje, ovi importi omogućavaju AI i historiju)
+try:
+    from app.ai import router as ai_router
+except Exception:
+    ai_router = None
+try:
+    from app.history import router as history_router
+except Exception:
+    history_router = None
+
 import os
 
 app = FastAPI(
@@ -15,17 +26,8 @@ app = FastAPI(
     description="API service with Supabase auth and RLS-aware CRUD"
 )
 
-
-
-
-# -- HISTORY ROUTES --
-app.include_router(history_router)
-# -- AI ROUTES --
-app.include_router(ai_router)
 # ---------- CORS ----------
 _frontends = os.getenv("FRONTEND_ORIGINS", "*")
-
-# Ako je *, ne smijemo koristiti credentials=True (CORS pravilo)
 if _frontends.strip() == "*":
     allow_origins = ["*"]
     allow_credentials = False
@@ -40,6 +42,12 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# ---------- Include routers (AI + History) ----------
+if ai_router:
+    app.include_router(ai_router)
+if history_router:
+    app.include_router(history_router)
 
 # ---------- MODELI ----------
 class SignupPayload(BaseModel):
@@ -60,27 +68,30 @@ class ItemUpdate(BaseModel):
     description: Optional[str] = None
     done: Optional[bool] = None
 
-
-# ---------- HEALTH / ROOT ----------
-@app.get("/health")
+# ---------- HEALTH / ROOT / UI ----------
+@app.get("/health", tags=["default"])
 def health():
     return {"status": "ok"}
 
-@app.get("/")
+@app.get("/", tags=["default"])
 def root():
     return {"message": "Agent Builder 01 API is running 🚀"}
 
+# nova UI ruta – posluži index.html iz root-a projekta
+@app.get("/ui", include_in_schema=False)
+def ui_page():
+    # Dockerfile radi COPY . /app, pa je index.html u radnom direktoriju
+    return FileResponse("index.html")
 
 # ---------- AUTH ----------
-@app.post("/auth/signup")
+@app.post("/auth/signup", tags=["auth"])
 def signup(payload: SignupPayload):
     res = supabase.auth.sign_up({"email": payload.email, "password": payload.password})
     if res.user is None:
         raise HTTPException(status_code=400, detail="Signup failed")
     return {"message": "Signup successful", "user": res.user}
 
-
-@app.post("/auth/login")
+@app.post("/auth/login", tags=["auth"])
 def login(payload: LoginPayload):
     try:
         res = supabase.auth.sign_in_with_password({"email": payload.email, "password": payload.password})
@@ -95,9 +106,8 @@ def login(payload: LoginPayload):
         "user": res.user,
     }
 
-
 # ---------- ITEMS (CRUD) ----------
-@app.post("/items")
+@app.post("/items", tags=["items"])
 def create_item(item: ItemCreate, user: AuthedUser = Depends(get_current_user)):
     supabase.postgrest.auth(user.token)
     data = {
@@ -111,8 +121,7 @@ def create_item(item: ItemCreate, user: AuthedUser = Depends(get_current_user)):
         raise HTTPException(status_code=400, detail="Failed to create item")
     return {"message": "Item created successfully", "item": res.data[0]}
 
-
-@app.get("/items")
+@app.get("/items", tags=["items"])
 def list_items(user: AuthedUser = Depends(get_current_user)):
     supabase.postgrest.auth(user.token)
     res = (
@@ -124,8 +133,7 @@ def list_items(user: AuthedUser = Depends(get_current_user)):
     )
     return res.data
 
-
-@app.patch("/items/{item_id}")
+@app.patch("/items/{item_id}", tags=["items"])
 def update_item(item_id: str, item: ItemUpdate, user: AuthedUser = Depends(get_current_user)):
     supabase.postgrest.auth(user.token)
     update_data = item.dict(exclude_unset=True)
@@ -142,8 +150,7 @@ def update_item(item_id: str, item: ItemUpdate, user: AuthedUser = Depends(get_c
         raise HTTPException(status_code=404, detail="Item not found or not yours")
     return {"message": "Item updated", "item": res.data[0]}
 
-
-@app.delete("/items/{item_id}")
+@app.delete("/items/{item_id}", tags=["items"])
 def delete_item(item_id: str, user: AuthedUser = Depends(get_current_user)):
     supabase.postgrest.auth(user.token)
     res = (
