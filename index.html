@@ -1,69 +1,71 @@
-<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>AB01 – API Tester</title>
-  <style>
-    body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,Arial,sans-serif;max-width:860px;margin:40px auto;padding:0 16px}
-    h1{font-size:22px;margin:0 0 8px}
-    .card{border:1px solid #ddd;border-radius:12px;padding:16px;margin:12px 0}
-    label{display:block;margin:8px 0 4px}
-    input,textarea,button{font:inherit}
-    input,textarea{width:100%;padding:10px;border:1px solid #ccc;border-radius:8px}
-    button{padding:10px 14px;border-radius:10px;border:1px solid #444;background:#111;color:#fff;cursor:pointer}
-    button:disabled{opacity:.5;cursor:not-allowed}
-    code,pre{background:#f6f8fa;border-radius:8px;padding:8px;display:block;white-space:pre-wrap}
-    .row{display:flex;gap:12px;flex-wrap:wrap}
-    .row > *{flex:1 1 300px}
-    .muted{color:#666}
-  </style>
-</head>
-<body>
-  <h1>Agent Builder 01 — API Tester</h1>
-  <p class="muted">Backend: <code id="base-url">https://agent-builder-01-1.onrender.com</code></p>
+<!doctype html><html lang="en"><head>
+<meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>AB01 – API Tester</title>
+<style>
+ body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,Arial,sans-serif;max-width:860px;margin:40px auto;padding:0 16px}
+ h1{font-size:22px;margin:0 0 8px}.card{border:1px solid #ddd;border-radius:12px;padding:16px;margin:12px 0}
+ label{display:block;margin:8px 0 4px} input,textarea,button{font:inherit}
+ input,textarea{width:100%;padding:10px;border:1px solid #ccc;border-radius:8px}
+ button{padding:10px 14px;border-radius:10px;border:1px solid #444;background:#111;color:#fff;cursor:pointer}
+ button:disabled{opacity:.5;cursor:not-allowed} code,pre{background:#f6f8fa;border-radius:8px;padding:8px;display:block;white-space:pre-wrap}
+ .row{display:flex;gap:12px;flex-wrap:wrap}.row>*{flex:1 1 300px}.muted{color:#666}
+ table{width:100%;border-collapse:collapse} th,td{border-top:1px solid #eee;padding:8px;text-align:left;vertical-align:top}
+ .right{float:right}
+</style>
+</head><body>
+<h1>Agent Builder 01 — API Tester</h1>
+<p class="muted">Backend: <code id="base-url">https://agent-builder-01-1.onrender.com</code></p>
 
-  <div class="card">
-    <h3>1) Health</h3>
-    <div class="row">
-      <button id="btn-health">GET /health</button>
-      <button id="btn-ai-health">GET /ai/health-check</button>
-    </div>
-    <pre id="out-health"></pre>
+<div class="card">
+  <h3>1) Health</h3>
+  <div class="row">
+    <button id="btn-health">GET /health</button>
+    <button id="btn-ai-health">GET /ai/health-check</button>
   </div>
+  <pre id="out-health"></pre>
+</div>
 
-  <div class="card">
-    <h3>2) Signup & Login</h3>
-    <label>Email</label>
-    <input id="email" value="test@example.com" />
-    <label>Password</label>
-    <input id="password" type="password" value="Test1234!" />
-    <div class="row">
-      <button id="btn-signup">POST /auth/signup</button>
-      <button id="btn-login">POST /auth/login</button>
-    </div>
-    <p class="muted">Access token (skraćen): <code id="token-short">-</code></p>
-    <pre id="out-auth"></pre>
+<div class="card">
+  <h3>2) Signup & Login</h3>
+  <label>Email</label><input id="email" value="test7@example.com"/>
+  <label>Password</label><input id="password" type="password" value="Test1234!"/>
+  <div class="row">
+    <button id="btn-signup">POST /auth/signup</button>
+    <button id="btn-login">POST /auth/login</button>
   </div>
+  <p class="muted">Access token (skraćen): <code id="token-short">-</code></p>
+  <pre id="out-auth"></pre>
+</div>
 
-  <div class="card">
-    <h3>3) AI /ai/query</h3>
-    <label>Prompt</label>
-    <textarea id="prompt" rows="3">U jednoj rečenici objasni šta je Supabase Auth.</textarea>
-    <div class="row">
-      <button id="btn-query">Send (non-stream)</button>
-      <button id="btn-stream">Send (stream)</button>
-    </div>
-    <h4>Odgovor</h4>
-    <pre id="out-answer"></pre>
-    <h4>Stream</h4>
-    <pre id="out-stream"></pre>
+<div class="card">
+  <h3>3) AI /ai/query</h3>
+  <label>Prompt</label>
+  <textarea id="prompt" rows="3">U jednoj rečenici objasni šta je Supabase Auth.</textarea>
+  <div class="row">
+    <button id="btn-query">Send (non-stream)</button>
+    <button id="btn-stream">Send (stream)</button>
   </div>
+  <h4>Odgovor</h4><pre id="out-answer"></pre>
+  <h4>Stream</h4><pre id="out-stream"></pre>
+</div>
+
+<div class="card">
+  <h3>4) History</h3>
+  <div class="row">
+    <button id="btn-history">GET /ai/history</button>
+    <button id="btn-del-all" class="right">DELETE /ai/history (all)</button>
+  </div>
+  <table id="hist-table"><thead>
+    <tr><th style="width:32%">Prompt</th><th>Response</th><th style="width:120px">Action</th></tr>
+  </thead><tbody></tbody></table>
+  <pre id="out-history"></pre>
+</div>
 
 <script>
 const BASE = document.getElementById('base-url').textContent.trim();
 function show(el, data){ el.textContent = (typeof data === 'string') ? data : JSON.stringify(data, null, 2); }
 async function getJSON(path){ const r = await fetch(BASE + path); return {status:r.status, body:await r.json().catch(()=>({}))}; }
+let token = null;
 
 document.getElementById('btn-health').onclick = async () => {
   const {status, body} = await getJSON('/health'); show(document.getElementById('out-health'), {status, body});
@@ -72,19 +74,14 @@ document.getElementById('btn-ai-health').onclick = async () => {
   const {status, body} = await getJSON('/ai/health-check'); show(document.getElementById('out-health'), {status, body});
 };
 
-let token = null;
 async function signupOrLogin(path){
   const email = document.getElementById('email').value.trim();
   const password = document.getElementById('password').value;
   const r = await fetch(BASE + path, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({email, password}) });
   const body = await r.json().catch(()=>({}));
   show(document.getElementById('out-auth'), {status:r.status, body});
-  if(path==='/auth/login'){
-    token = body.access_token || body.accessToken || null;
-    document.getElementById('token-short').textContent = token ? token.slice(0,16)+'…' : '(no token)';
-  }
+  if(path==='/auth/login'){ token = body.access_token || body.accessToken || null; document.getElementById('token-short').textContent = token ? token.slice(0,16)+'…' : '(no token)'; }
 }
-
 document.getElementById('btn-signup').onclick = ()=> signupOrLogin('/auth/signup');
 document.getElementById('btn-login').onclick = ()=> signupOrLogin('/auth/login');
 
@@ -92,25 +89,43 @@ document.getElementById('btn-query').onclick = async () => {
   if(!token){ alert('Prvo login.'); return; }
   const prompt = document.getElementById('prompt').value;
   const r = await fetch(BASE + '/ai/query', { method:'POST', headers:{'Content-Type':'application/json','Authorization':'Bearer '+token}, body: JSON.stringify({prompt}) });
-  const body = await r.json().catch(()=>({}));
-  show(document.getElementById('out-answer'), body);
+  const body = await r.json().catch(()=>({})); show(document.getElementById('out-answer'), body);
 };
 
 document.getElementById('btn-stream').onclick = async () => {
   if(!token){ alert('Prvo login.'); return; }
-  const prompt = document.getElementById('prompt').value;
-  const out = document.getElementById('out-stream'); out.textContent = '';
+  const prompt = document.getElementById('prompt').value; const out = document.getElementById('out-stream'); out.textContent = '';
   const r = await fetch(BASE + '/ai/stream', { method:'POST', headers:{'Content-Type':'application/json','Authorization':'Bearer '+token}, body: JSON.stringify({prompt}) });
   const reader = r.body.getReader(); const decoder = new TextDecoder();
   while(true){ const {done, value} = await reader.read(); if(done) break;
     const chunk = decoder.decode(value, {stream:true});
-    chunk.split('\n').forEach(line=>{
-      line=line.trim(); if(line.startsWith('data:')){ const data=line.slice(5).trim(); if(data && data!=='[DONE]'){
-        try{ const obj=JSON.parse(data); if(obj.token){ out.textContent += obj.token; } }catch(e){}
-      }}
-    });
+    chunk.split('\n').forEach(line=>{ line=line.trim(); if(line.startsWith('data:')){ const data=line.slice(5).trim(); if(data && data!=='[DONE]'){ try{ const obj=JSON.parse(data); if(obj.token){ out.textContent += obj.token; } }catch(e){} } }});
   }
 };
+
+async function loadHistory(){
+  if(!token){ alert('Prvo login.'); return; }
+  const r = await fetch(BASE + '/ai/history', { headers:{'Authorization':'Bearer '+token} });
+  const body = await r.json().catch(()=>({})); show(document.getElementById('out-history'), body);
+  const tbody = document.querySelector('#hist-table tbody'); tbody.innerHTML='';
+  const items = body.items || [];
+  for(const it of items){
+    const tr = document.createElement('tr');
+    const tdP = document.createElement('td'); tdP.textContent = it.prompt; tr.appendChild(tdP);
+    const tdR = document.createElement('td'); tdR.textContent = it.response; tr.appendChild(tdR);
+    const tdA = document.createElement('td');
+    const btn = document.createElement('button'); btn.textContent='Delete';
+    btn.onclick = async ()=>{ await fetch(BASE + '/ai/history/' + it.id, { method:'DELETE', headers:{'Authorization':'Bearer '+token} }); loadHistory(); };
+    tdA.appendChild(btn); tr.appendChild(tdA);
+    tbody.appendChild(tr);
+  }
+}
+document.getElementById('btn-history').onclick = loadHistory;
+
+document.getElementById('btn-del-all').onclick = async () => {
+  if(!token){ alert('Prvo login.'); return; }
+  await fetch(BASE + '/ai/history', { method:'DELETE', headers:{'Authorization':'Bearer '+token} });
+  loadHistory();
+};
 </script>
-</body>
-</html>
+</body></html>
