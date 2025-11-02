@@ -9,7 +9,7 @@ import os
 from supabase_service import supabase
 from app.auth import get_current_user, AuthedUser
 
-# Routers (optional – ako postoje, include)
+# Routers (optional – ako postoje)
 try:
     from app.ai import router as ai_router
 except Exception:
@@ -46,9 +46,9 @@ app.add_middleware(
 )
 
 # ---------- Include routers ----------
-if ai_router:        app.include_router(ai_router)
-if history_router:   app.include_router(history_router)
-if debug_router:     app.include_router(debug_router)   # <— /debug/env
+if ai_router:      app.include_router(ai_router)
+if history_router: app.include_router(history_router)
+if debug_router:   app.include_router(debug_router)   # <— /debug/env
 
 # ---------- MODELI ----------
 class SignupPayload(BaseModel):
@@ -70,23 +70,23 @@ class ItemUpdate(BaseModel):
     done: Optional[bool] = None
 
 # ---------- HEALTH / ROOT / UI ----------
-@app.get("/health", tags=["default"])
+@app.get("/health")
 def health(): return {"status": "ok"}
 
-@app.get("/", tags=["default"])
+@app.get("/")
 def root(): return {"message": "Agent Builder 01 API is running 🚀"}
 
 @app.get("/ui", include_in_schema=False)
 def ui_page(): return FileResponse("index.html")
 
 # ---------- AUTH ----------
-@app.post("/auth/signup", tags=["auth"])
+@app.post("/auth/signup")
 def signup(payload: SignupPayload):
     res = supabase.auth.sign_up({"email": payload.email, "password": payload.password})
     if res.user is None: raise HTTPException(status_code=400, detail="Signup failed")
     return {"message": "Signup successful", "user": res.user}
 
-@app.post("/auth/login", tags=["auth"])
+@app.post("/auth/login")
 def login(payload: LoginPayload):
     try:
         res = supabase.auth.sign_in_with_password({"email": payload.email, "password": payload.password})
@@ -101,7 +101,7 @@ def login(payload: LoginPayload):
     }
 
 # ---------- ITEMS (CRUD) ----------
-@app.post("/items", tags=["items"])
+@app.post("/items")
 def create_item(item: ItemCreate, user: AuthedUser = Depends(get_current_user)):
     supabase.postgrest.auth(user.token)
     data = {"title": item.title, "description": item.description, "done": item.done, "user_id": user.id}
@@ -109,13 +109,13 @@ def create_item(item: ItemCreate, user: AuthedUser = Depends(get_current_user)):
     if not res.data: raise HTTPException(status_code=400, detail="Failed to create item")
     return {"message": "Item created successfully", "item": res.data[0]}
 
-@app.get("/items", tags=["items"])
+@app.get("/items")
 def list_items(user: AuthedUser = Depends(get_current_user)):
     supabase.postgrest.auth(user.token)
     res = supabase.table("items").select("*").eq("user_id", user.id).order("created_at", desc=True).execute()
     return res.data
 
-@app.patch("/items/{item_id}", tags=["items"])
+@app.patch("/items/{item_id}")
 def update_item(item_id: str, item: ItemUpdate, user: AuthedUser = Depends(get_current_user)):
     supabase.postgrest.auth(user.token)
     update_data = item.dict(exclude_unset=True)
@@ -124,7 +124,7 @@ def update_item(item_id: str, item: ItemUpdate, user: AuthedUser = Depends(get_c
     if not res.data: raise HTTPException(status_code=404, detail="Item not found or not yours")
     return {"message": "Item updated", "item": res.data[0]}
 
-@app.delete("/items/{item_id}", tags=["items"])
+@app.delete("/items/{item_id}")
 def delete_item(item_id: str, user: AuthedUser = Depends(get_current_user)):
     supabase.postgrest.auth(user.token)
     res = supabase.table("items").delete().eq("id", item_id).eq("user_id", user.id).execute()
