@@ -1,0 +1,55 @@
+=== AGENT BUILDER 01 – SNAPSHOT ===
+Date: 2025-11-02T10:39:54+00:00
+
+## ROOT TREE (do 2 nivoa):
+.
+├── .dockerignore
+├── .env
+├── .env.example
+├── .git
+│   ├── COMMIT_EDITMSG
+│   ├── FETCH_HEAD
+│   ├── HEAD
+│   ├── config
+│   ├── description
+│   ├── hooks
+│   ├── index
+│   ├── info
+│   ├── lfs
+│   ├── logs
+│   ├── objects
+│   ├── packed-refs
+│   └── refs
+├── .gitignore
+├── .vscode
+│   └── settings.json
+├── Dockerfile
+├── README.md
+├── __pycache__
+│   └── supabase_service.cpython-312.pyc
+├── app
+│   ├── __init__.py
+│   ├── __pycache__
+│   ├── auth.py
+│   └── main.py
+├── compose.yaml
+├── docker-compose.yml
+├── index.html
+├── main.py
+├── project-snapshot-20251102-103954.txt
+├── project-snapshot.sh
+├── render.yaml.bak
+├── requirements.txt
+├── schemas.py
+├── supabase
+│   └── migrations
+└── supabase_service.py
+
+14 directories, 28 files
+
+## MANUAL NOTES (popuni ručno ispod, samo tekst):
+RENDER_BACKEND_URL=***
+RENDER_ENV_SET=YES/NO
+SUPABASE_PROJECT_URL=***
+FEATURES_DONE= (npr. auth verify, ai/query radi…)
+FEATURES_TODO= (npr. streaming, historija, rate limit…)

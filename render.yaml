@@ -6,17 +6,10 @@ services:
     region: frankfurt
     autoDeploy: true
     healthCheckPath: /health
-    # Dockerfile se koristi automatski; nije potreban start command
     envVars:
-      # Ove dvije obavezno postavi u Render Dashboardu (sync:false => ne čuvamo tajne u repo)
       - key: SUPABASE_URL
         sync: false
       - key: SUPABASE_ANON_KEY
         sync: false
-      # Ostale možeš staviti odmah ovdje ili u Dashboardu
-      - key: JWT_AUDIENCE
-        value: authenticated
-      - key: JWT_ISSUER
-        value: https://mglnanchadriyyuofgnm.supabase.co/auth/v1
       - key: FRONTEND_ORIGINS
         value: "*"

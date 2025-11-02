@@ -1,0 +1,511 @@
+===== requirements.txt =====
+fastapi==0.115.5
+uvicorn[standard]==0.31.1
+supabase==2.6.0
+python-jose[cryptography]==3.3.0
+httpx==0.27.2
+pydantic==2.9.2
+requests==2.32.3
+
+===== Dockerfile =====
+# ------------------------------
+# Agent Builder 01 - Dockerfile
+# ------------------------------
+FROM python:3.12-slim
+
+# Radni direktorij unutar kontejnera
+WORKDIR /app
+
+# Instalacijske datoteke najprije (bolji cache)
+COPY requirements.txt /app/requirements.txt
+RUN pip install --no-cache-dir -r /app/requirements.txt
+
+# Kopiraj ostatak izvornog koda
+COPY . /app
+
+# Osiguraj da je /app na PYTHONPATH-u (radi importa 'app')
+ENV PYTHONPATH=/app
+ENV PYTHONUNBUFFERED=1
+
+# Port koji Render prosljeđuje
+EXPOSE 8000
+
+# Pokreni uvicorn; PORT dolazi iz Render env varijable
+CMD ["/bin/sh","-lc","python -m uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}"]
+
+===== docker-compose.yml =====
+
+===== compose.yaml =====
+version: "3.9"
+services:
+  api:
+    build: .
+    container_name: agent-builder-01
+    env_file:
+      - .env
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+
+===== render.yaml.bak =====
+services:
+  - type: web
+    name: agent-builder-01
+    env: docker
+    plan: free
+    region: frankfurt
+    autoDeploy: true
+    healthCheckPath: /health
+    # Dockerfile se koristi automatski; nije potreban start command
+    envVars:
+      # Ove dvije obavezno postavi u Render Dashboardu (sync:false => ne čuvamo tajne u repo)
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_ANON_KEY
+        sync: false
+      # Ostale možeš staviti odmah ovdje ili u Dashboardu
+      - key: JWT_AUDIENCE
+        value: authenticated
+      - key: JWT_ISSUER
+        value: https://mglnanchadriyyuofgnm.supabase.co/auth/v1
+      - key: FRONTEND_ORIGINS
+        value: "*"
+
+===== schemas.py =====
+# schemas.py
+from typing import Optional
+from pydantic import BaseModel, Field, EmailStr
+
+# -----------------------------
+# Item sheme
+# -----------------------------
+class ItemCreate(BaseModel):
+    title: str = Field(..., min_length=1)
+    description: Optional[str] = None
+    done: bool = False
+
+
+class ItemUpdate(BaseModel):
+    title: Optional[str] = Field(None, min_length=1)
+    description: Optional[str] = None
+    done: Optional[bool] = None
+
+
+# -----------------------------
+# Auth sheme
+# -----------------------------
+class LoginPayload(BaseModel):
+    email: EmailStr
+    password: str = Field(..., min_length=6)
+
+
+class SignupPayload(BaseModel):
+    email: EmailStr
+    password: str = Field(..., min_length=6)
+
+===== main.py (root) =====
+from fastapi import FastAPI, HTTPException, Depends
+from fastapi.responses import JSONResponse
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from supabase import create_client, Client
+from pydantic import BaseModel
+import os
+import requests
+
+# -----------------------------------------------------------------------------
+# APP INIT
+# -----------------------------------------------------------------------------
+app = FastAPI(
+    title="Agent Builder 01 — FastAPI + Supabase",
+    version="0.1.0",
+    description="API service for managing users and items with Supabase authentication",
+)
+
+security = HTTPBearer()
+
+# -----------------------------------------------------------------------------
+# SUPABASE INIT
+# -----------------------------------------------------------------------------
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+
+def get_supabase() -> Client:
+    if not SUPABASE_URL or not SUPABASE_KEY:
+        raise ValueError("Supabase credentials not configured")
+    return create_client(SUPABASE_URL, SUPABASE_KEY)
+
+# -----------------------------------------------------------------------------
+# MODELI
+# -----------------------------------------------------------------------------
+class SignupPayload(BaseModel):
+    email: str
+    password: str
+
+class LoginPayload(BaseModel):
+    email: str
+    password: str
+
+class ItemCreate(BaseModel):
+    title: str
+    description: str
+    done: bool = False
+
+class ItemUpdate(BaseModel):
+    title: str | None = None
+    description: str | None = None
+    done: bool | None = None
+
+# -----------------------------------------------------------------------------
+# AUTH FUNKCIJE
+# -----------------------------------------------------------------------------
+def get_user_from_token(token: str):
+    """Vrati korisnika iz Supabase Auth tokena."""
+    try:
+        resp = requests.get(
+            f"{SUPABASE_URL}/auth/v1/user",
+            headers={"Authorization": f"Bearer {token}", "apikey": SUPABASE_KEY},
+        )
+        if resp.status_code != 200:
+            raise HTTPException(status_code=401, detail="Invalid or expired token")
+        return resp.json()
+    except Exception:
+        raise HTTPException(status_code=401, detail="Authentication failed")
+
+def require_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    token = credentials.credentials
+    return get_user_from_token(token)
+
+# -----------------------------------------------------------------------------
+# ROUTES
+# -----------------------------------------------------------------------------
+@app.get("/health", tags=["default"])
+def health():
+    return {"status": "ok"}
+
+@app.get("/", tags=["default"])
+def root():
+    return {"message": "Agent Builder 01 API running successfully."}
+
+# --- SIGNUP -------------------------------------------------------------------
+@app.post("/auth/signup", tags=["default"])
+def signup(payload: SignupPayload):
+    sb = get_supabase()
+    try:
+        result = sb.auth.sign_up({"email": payload.email, "password": payload.password})
+        return {"user": result.user, "session": result.session}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+# --- LOGIN --------------------------------------------------------------------
+@app.post("/auth/login", tags=["default"])
+def login(payload: LoginPayload):
+    """Prijavi i vraća access token iz Supabase Autha."""
+    url = f"{SUPABASE_URL}/auth/v1/token?grant_type=password"
+    headers = {
+        "apikey": SUPABASE_KEY,
+        "Content-Type": "application/json",
+    }
+    data = {"email": payload.email, "password": payload.password}
+
+    resp = requests.post(url, headers=headers, json=data)
+    if resp.status_code != 200:
+        raise HTTPException(status_code=401, detail="Invalid login credentials")
+    return resp.json()
+
+# --- CREATE ITEM --------------------------------------------------------------
+@app.post("/items", tags=["default"])
+async def create_item(item: ItemCreate, user=Depends(require_user)):
+    sb = get_supabase()
+    uid = (
+        user.get("user", {}).get("id")
+        or user.get("id")
+        or user.get("user_id")
+    )
+    if not uid:
+        raise HTTPException(status_code=401, detail="Missing user id")
+
+    try:
+        resp = sb.table("items").insert({
+            "title": item.title,
+            "description": item.description,
+            "done": item.done,
+            "user_id": uid
+        }).execute()
+        return {"item": resp.data[0] if resp.data else None}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"DB insert error: {str(e)}")
+
+# --- GET ITEMS (POPPRAVLJENO) -------------------------------------------------
+@app.get("/items", tags=["default"])
+async def list_items(user=Depends(require_user)):
+    """Vraća sve iteme prijavljenog korisnika."""
+    sb = get_supabase()
+
+    uid = None
+    if isinstance(user, dict):
+        uid = (
+            user.get("user", {}).get("id")
+            or user.get("id")
+            or user.get("user_id")
+        )
+
+    if not uid:
+        return JSONResponse(status_code=401, content={"detail": "Not authenticated (no user id)"})
+
+    try:
+        resp = sb.table("items").select("*").eq("user_id", uid).execute()
+        rows = resp.data or []
+        return {"items": rows}
+    except Exception as e:
+        return JSONResponse(
+            status_code=500,
+            content={"detail": f"DB error: {str(e)}"}
+        )
+
+# --- UPDATE ITEM --------------------------------------------------------------
+@app.patch("/items/{item_id}", tags=["default"])
+async def update_item(item_id: str, item: ItemUpdate, user=Depends(require_user)):
+    sb = get_supabase()
+    uid = (
+        user.get("user", {}).get("id")
+        or user.get("id")
+        or user.get("user_id")
+    )
+
+    try:
+        updates = {k: v for k, v in item.dict().items() if v is not None}
+        resp = sb.table("items").update(updates).eq("id", item_id).eq("user_id", uid).execute()
+        return {"updated": resp.data}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"DB update error: {str(e)}")
+
+# --- DELETE ITEM --------------------------------------------------------------
+@app.delete("/items/{item_id}", tags=["default"])
+async def delete_item(item_id: str, user=Depends(require_user)):
+    sb = get_supabase()
+    uid = (
+        user.get("user", {}).get("id")
+        or user.get("id")
+        or user.get("user_id")
+    )
+    try:
+        sb.table("items").delete().eq("id", item_id).eq("user_id", uid).execute()
+        return {"deleted": item_id}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"DB delete error: {str(e)}")
+
+===== app/__init__.py =====
+
+===== app/main.py =====
+# app/main.py
+from fastapi import FastAPI, Depends, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+from typing import Optional
+from supabase_service import supabase
+from app.auth import get_current_user, AuthedUser
+import os
+
+app = FastAPI(
+    title="Agent Builder 01 — FastAPI + Supabase",
+    version="0.1.0",
+    description="API service with Supabase auth and RLS-aware CRUD"
+)
+
+# ---------- CORS ----------
+_frontends = os.getenv("FRONTEND_ORIGINS", "*")
+
+# Ako je *, ne smijemo koristiti credentials=True (CORS pravilo)
+if _frontends.strip() == "*":
+    allow_origins = ["*"]
+    allow_credentials = False
+else:
+    allow_origins = [o.strip() for o in _frontends.split(",") if o.strip()]
+    allow_credentials = True
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=allow_origins,
+    allow_credentials=allow_credentials,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# ---------- MODELI ----------
+class SignupPayload(BaseModel):
+    email: str
+    password: str
+
+class LoginPayload(BaseModel):
+    email: str
+    password: str
+
+class ItemCreate(BaseModel):
+    title: str
+    description: Optional[str] = None
+    done: bool = False
+
+class ItemUpdate(BaseModel):
+    title: Optional[str] = None
+    description: Optional[str] = None
+    done: Optional[bool] = None
+
+
+# ---------- HEALTH / ROOT ----------
+@app.get("/health")
+def health():
+    return {"status": "ok"}
+
+@app.get("/")
+def root():
+    return {"message": "Agent Builder 01 API is running 🚀"}
+
+
+# ---------- AUTH ----------
+@app.post("/auth/signup")
+def signup(payload: SignupPayload):
+    res = supabase.auth.sign_up({"email": payload.email, "password": payload.password})
+    if res.user is None:
+        raise HTTPException(status_code=400, detail="Signup failed")
+    return {"message": "Signup successful", "user": res.user}
+
+
+@app.post("/auth/login")
+def login(payload: LoginPayload):
+    try:
+        res = supabase.auth.sign_in_with_password({"email": payload.email, "password": payload.password})
+    except Exception:
+        raise HTTPException(status_code=401, detail="Invalid login credentials")
+    if res.session is None:
+        raise HTTPException(status_code=401, detail="Invalid login credentials")
+    return {
+        "access_token": res.session.access_token,
+        "token_type": "bearer",
+        "expires_in": res.session.expires_in,
+        "user": res.user,
+    }
+
+
+# ---------- ITEMS (CRUD) ----------
+@app.post("/items")
+def create_item(item: ItemCreate, user: AuthedUser = Depends(get_current_user)):
+    supabase.postgrest.auth(user.token)
+    data = {
+        "title": item.title,
+        "description": item.description,
+        "done": item.done,
+        "user_id": user.id,
+    }
+    res = supabase.table("items").insert(data).execute()
+    if not res.data:
+        raise HTTPException(status_code=400, detail="Failed to create item")
+    return {"message": "Item created successfully", "item": res.data[0]}
+
+
+@app.get("/items")
+def list_items(user: AuthedUser = Depends(get_current_user)):
+    supabase.postgrest.auth(user.token)
+    res = (
+        supabase.table("items")
+        .select("*")
+        .eq("user_id", user.id)
+        .order("created_at", desc=True)
+        .execute()
+    )
+    return res.data
+
+
+@app.patch("/items/{item_id}")
+def update_item(item_id: str, item: ItemUpdate, user: AuthedUser = Depends(get_current_user)):
+    supabase.postgrest.auth(user.token)
+    update_data = item.dict(exclude_unset=True)
+    if not update_data:
+        raise HTTPException(status_code=400, detail="No fields to update")
+    res = (
+        supabase.table("items")
+        .update(update_data)
+        .eq("id", item_id)
+        .eq("user_id", user.id)
+        .execute()
+    )
+    if not res.data:
+        raise HTTPException(status_code=404, detail="Item not found or not yours")
+    return {"message": "Item updated", "item": res.data[0]}
+
+
+@app.delete("/items/{item_id}")
+def delete_item(item_id: str, user: AuthedUser = Depends(get_current_user)):
+    supabase.postgrest.auth(user.token)
+    res = (
+        supabase.table("items")
+        .delete()
+        .eq("id", item_id)
+        .eq("user_id", user.id)
+        .execute()
+    )
+    if res.data == []:
+        raise HTTPException(status_code=404, detail="Item not found or not yours")
+    return {"message": "Item deleted", "id": item_id}
+
+===== app/auth.py =====
+# app/auth.py
+from fastapi import Depends, HTTPException
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from pydantic import BaseModel
+from supabase_service import supabase
+
+security = HTTPBearer()
+
+class AuthedUser(BaseModel):
+    id: str
+    token: str
+
+def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)) -> AuthedUser:
+    """
+    Validacija user JWT-a preko Supabase-a. Vraća (user_id, token).
+    """
+    token = credentials.credentials
+    try:
+        res = supabase.auth.get_user(token)
+        if res.user is None:
+            raise HTTPException(status_code=401, detail="Invalid token")
+        return AuthedUser(id=res.user.id, token=token)
+    except Exception:
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
+
+===== supabase_service.py =====
+# supabase_service.py
+from supabase import create_client, Client
+import os
+
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_ANON_KEY") or os.getenv("SUPABASE_KEY")
+
+if not SUPABASE_URL or not SUPABASE_KEY:
+    raise RuntimeError("Missing SUPABASE_URL or SUPABASE_ANON_KEY in environment.")
+
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+
+===== .env.example (redacted) =====
+# Backend
+PORT=***REDACTED***
+
+# Supabase
+SUPABASE_URL=***REDACTED***
+SUPABASE_KEY=***REDACTED***
+
+# JWT
+JWT_AUDIENCE=***REDACTED***
+JWT_ISSUER=***REDACTED***
+
+# CORS: dozvoljene domene (zarezom)
+FRONTEND_ORIGINS=***REDACTED***
+
+===== .env.keys (names only) =====
+SUPABASE_URL=***REDACTED***
+SUPABASE_ANON_KEY=***REDACTED***
+JWT_AUDIENCE=***REDACTED***
+JWT_ISSUER=***REDACTED***
+FRONTEND_ORIGINS=***REDACTED***
+PORT=***REDACTED***
+

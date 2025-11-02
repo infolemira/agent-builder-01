@@ -1,0 +1,254 @@
+<!doctype html>
+<html lang="hr">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Agent Builder – Minimal UI</title>
+  <style>
+    body { font-family: system-ui, Arial, sans-serif; margin: 24px; max-width: 900px }
+    h1 { margin: 0 0 8px }
+    .card { border: 1px solid #ddd; border-radius: 12px; padding: 16px; margin: 16px 0 }
+    label { display:block; font-weight:600; margin-top:8px }
+    input, textarea { width: 100%; padding: 8px; border:1px solid #ccc; border-radius:8px }
+    button { padding: 8px 12px; border-radius: 8px; border: 1px solid #333; background:#111; color:#fff; cursor:pointer }
+    button.ghost { background: #fff; color:#111; border-color:#ccc }
+    .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap }
+    .space { height: 12px }
+    .muted { color:#666; font-size: 12px }
+    .ok { color:#0a9629; font-weight:600 }
+    .err { color:#b00020; font-weight:600 }
+    .item { display:flex; gap:12px; align-items:center; justify-content:space-between; padding:10px 0; border-bottom:1px dashed #eee }
+    .item:last-child { border-bottom:0 }
+    .grow { flex:1 }
+    .strike { text-decoration: line-through; color:#666 }
+  </style>
+</head>
+<body>
+  <h1>Agent Builder – Minimal UI</h1>
+  <div class="muted">API: <span id="apiUrlText"></span></div>
+
+  <div class="card" id="authCard">
+    <h2>Prijava</h2>
+    <div class="row">
+      <label>Email</label>
+      <input id="email" value="devuser@example.com" />
+    </div>
+    <div class="row">
+      <label>Lozinka</label>
+      <input id="password" type="password" value="Test1234!" />
+    </div>
+    <div class="space"></div>
+    <div class="row">
+      <button id="loginBtn">Prijava</button>
+      <button class="ghost" id="signupBtn">Signup</button>
+      <span id="authMsg" class="muted"></span>
+    </div>
+  </div>
+
+  <div class="card" id="itemsCard" style="display:none">
+    <h2>Stavke</h2>
+
+    <div class="row">
+      <div class="grow">
+        <label>Naslov</label>
+        <input id="newTitle" placeholder="npr. Testni zadatak" />
+      </div>
+      <div class="grow">
+        <label>Opis</label>
+        <input id="newDesc" placeholder="npr. API radi!" />
+      </div>
+      <div style="align-self:flex-end">
+        <button id="createBtn">Dodaj</button>
+      </div>
+    </div>
+
+    <div class="space"></div>
+    <div id="list"></div>
+    <div class="space"></div>
+    <div class="row">
+      <button class="ghost" id="logoutBtn">Odjava</button>
+      <span id="itemsMsg" class="muted"></span>
+    </div>
+  </div>
+
+  <script>
+    // ==== PODESI API URL ====
+    // Ovo je tvoj Render URL backenda:
+    const API = localStorage.getItem('apiUrl') || 'https://agent-builder-01.onrender.com';
+    document.getElementById('apiUrlText').textContent = API;
+
+    // ==== TOKEN PERSIST ====
+    let token = localStorage.getItem('ab_token') || '';
+    const authCard = document.getElementById('authCard');
+    const itemsCard = document.getElementById('itemsCard');
+    const listDiv = document.getElementById('list');
+    const authMsg = document.getElementById('authMsg');
+    const itemsMsg = document.getElementById('itemsMsg');
+
+    function uiLoggedIn(on) {
+      authCard.style.display = on ? 'none' : 'block';
+      itemsCard.style.display = on ? 'block' : 'none';
+    }
+
+    async function call(method, path, body, withAuth = false) {
+      const res = await fetch(API + path, {
+        method,
+        headers: {
+          'Content-Type': 'application/json',
+          ...(withAuth ? { Authorization: 'Bearer ' + token } : {})
+        },
+        body: body ? JSON.stringify(body) : undefined
+      });
+      if (!res.ok) {
+        const text = await res.text().catch(() => '');
+        throw new Error(`HTTP ${res.status}: ${text}`);
+      }
+      return res.json();
+    }
+
+    async function login() {
+      authMsg.textContent = '...';
+      authMsg.className = 'muted';
+      try {
+        const email = document.getElementById('email').value.trim();
+        const password = document.getElementById('password').value;
+        const data = await call('POST', '/auth/login', { email, password });
+        token = data.access_token;
+        localStorage.setItem('ab_token', token);
+        authMsg.textContent = 'Prijava uspješna.';
+        authMsg.className = 'ok';
+        uiLoggedIn(true);
+        await refreshList();
+      } catch (e) {
+        authMsg.textContent = 'Greška: ' + e.message;
+        authMsg.className = 'err';
+      }
+    }
+
+    async function signup() {
+      authMsg.textContent = '...';
+      authMsg.className = 'muted';
+      try {
+        const email = document.getElementById('email').value.trim();
+        const password = document.getElementById('password').value;
+        await call('POST', '/auth/signup', { email, password });
+        authMsg.textContent = 'Signup OK – sada Prijava.';
+        authMsg.className = 'ok';
+      } catch (e) {
+        authMsg.textContent = 'Greška: ' + e.message;
+        authMsg.className = 'err';
+      }
+    }
+
+    async function refreshList() {
+      itemsMsg.textContent = 'Učitavam...';
+      itemsMsg.className = 'muted';
+      try {
+        const items = await call('GET', '/items', null, true);
+        renderList(items);
+        itemsMsg.textContent = '';
+      } catch (e) {
+        itemsMsg.textContent = 'Greška: ' + e.message;
+        itemsMsg.className = 'err';
+      }
+    }
+
+    function renderList(items) {
+      if (!Array.isArray(items) || items.length === 0) {
+        listDiv.innerHTML = '<div class="muted">Nema stavki.</div>';
+        return;
+      }
+      listDiv.innerHTML = items.map(it => `
+        <div class="item" data-id="${it.id}">
+          <div class="grow">
+            <div class="${it.done ? 'strike' : ''}"><strong>${escapeHtml(it.title)}</strong></div>
+            <div class="muted">${escapeHtml(it.description ?? '')}</div>
+          </div>
+          <div class="row">
+            <button class="ghost" onclick="toggleDone('${it.id}', ${!it.done})">${it.done ? 'Vrati' : 'Završi'}</button>
+            <button class="ghost" onclick="editItem('${it.id}', '${encodeURIComponent(it.title)}', '${encodeURIComponent(it.description ?? '')}')">Uredi</button>
+            <button onclick="delItem('${it.id}')">Obriši</button>
+          </div>
+        </div>
+      `).join('');
+    }
+
+    function escapeHtml(s) {
+      return (s ?? '').toString()
+        .replaceAll('&','&amp;')
+        .replaceAll('<','&lt;')
+        .replaceAll('>','&gt;')
+        .replaceAll('"','&quot;')
+        .replaceAll("'","&#39;");
+    }
+
+    async function createItem() {
+      const title = document.getElementById('newTitle').value.trim();
+      const description = document.getElementById('newDesc').value.trim();
+      if (!title) { alert('Naslov je obavezan'); return; }
+      try {
+        await call('POST', '/items', { title, description, done:false }, true);
+        document.getElementById('newTitle').value = '';
+        document.getElementById('newDesc').value = '';
+        await refreshList();
+      } catch (e) {
+        alert('Greška: ' + e.message);
+      }
+    }
+
+    async function toggleDone(id, done) {
+      try {
+        await call('PATCH', '/items/' + id, { done }, true);
+        await refreshList();
+      } catch (e) {
+        alert('Greška: ' + e.message);
+      }
+    }
+
+    async function editItem(id, encTitle, encDesc) {
+      const title = decodeURIComponent(encTitle);
+      const description = decodeURIComponent(encDesc);
+      const nt = prompt('Novi naslov:', title);
+      if (nt === null) return;
+      const nd = prompt('Novi opis:', description);
+      if (nd === null) return;
+      try {
+        await call('PATCH', '/items/' + id, { title: nt, description: nd }, true);
+        await refreshList();
+      } catch (e) {
+        alert('Greška: ' + e.message);
+      }
+    }
+
+    async function delItem(id) {
+      if (!confirm('Obrisati stavku?')) return;
+      try {
+        await call('DELETE', '/items/' + id, null, true);
+        await refreshList();
+      } catch (e) {
+        alert('Greška: ' + e.message);
+      }
+    }
+
+    function logout() {
+      token = '';
+      localStorage.removeItem('ab_token');
+      uiLoggedIn(false);
+    }
+
+    // event listeners
+    document.getElementById('loginBtn').onclick = login;
+    document.getElementById('signupBtn').onclick = signup;
+    document.getElementById('createBtn').onclick = createItem;
+    document.getElementById('logoutBtn').onclick = logout;
+
+    // auto-login if token exists
+    if (token) {
+      uiLoggedIn(true);
+      refreshList();
+    } else {
+      uiLoggedIn(false);
+    }
+  </script>
+</body>
+</html>
