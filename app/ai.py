@@ -1,4 +1,4 @@
-# app/ai.py
+# app/ai.py — koristi OpenRouter API umjesto OpenAI
 from fastapi import APIRouter, HTTPException, Depends
 from fastapi.responses import JSONResponse
 from sse_starlette.sse import EventSourceResponse
@@ -9,13 +9,16 @@ import os, json, httpx
 from app.auth import get_current_user, AuthedUser
 from supabase_service import supabase
 
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-AI_MODEL = os.getenv("AI_MODEL", "gpt-4o-mini")
-
 router = APIRouter(prefix="/ai", tags=["ai"])
 
+OPENROUTER_KEY = os.getenv("OPENROUTER_API_KEY")
+AI_MODEL = os.getenv("AI_MODEL", "meta-llama/llama-3.1-8b-instruct:free")
+
+if not OPENROUTER_KEY:
+    raise HTTPException(status_code=500, detail="Server nema OPENROUTER_API_KEY")
+
 class PromptPayload(BaseModel):
-    prompt: str = Field(..., min_length=1, description="Korisnički upit")
+    prompt: str = Field(..., min_length=1)
     temperature: Optional[float] = Field(0.2, ge=0.0, le=1.0)
 
 async def _save_query(user: AuthedUser, prompt: str, response: str) -> None:
@@ -27,95 +30,74 @@ async def _save_query(user: AuthedUser, prompt: str, response: str) -> None:
             "response": response
         }).execute()
     except Exception:
-        # Ne ruši odgovor zbog log greške
         pass
 
 @router.get("/health-check")
-def ai_health_check():
-    if not OPENAI_API_KEY:
-        raise HTTPException(status_code=500, detail="Server nema OPENAI_API_KEY")
-    return {"ok": True, "model": AI_MODEL}
+def health_check():
+    return {"ok": True, "provider": "openrouter", "model": AI_MODEL}
 
 @router.post("/query")
 async def ai_query(payload: PromptPayload, user: AuthedUser = Depends(get_current_user)):
-    if not OPENAI_API_KEY:
-        raise HTTPException(status_code=500, detail="Server nema OPENAI_API_KEY")
-    try:
-        async with httpx.AsyncClient(timeout=60) as client:
-            r = await client.post(
-                "https://api.openai.com/v1/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {OPENAI_API_KEY}",
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "model": AI_MODEL,
-                    "messages": [
-                        {"role": "system", "content": "You are a helpful assistant."},
-                        {"role": "user", "content": payload.prompt},
-                    ],
-                    "temperature": payload.temperature,
-                },
-            )
-        if r.status_code != 200:
-            return JSONResponse(status_code=r.status_code, content={"error": "OpenAI error", "detail": r.text})
-        data = r.json()
-        answer = (data.get("choices") or [{}])[0].get("message", {}).get("content", "") or ""
-        await _save_query(user, payload.prompt, answer)
-        return {"user_id": user.id, "prompt": payload.prompt, "answer": answer}
-    except httpx.HTTPError as e:
-        raise HTTPException(status_code=502, detail=f"Upstream error: {str(e)}")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"AI failure: {str(e)}")
+    headers = {
+        "Authorization": f"Bearer {OPENROUTER_KEY}",
+        "HTTP-Referer": "https://agent-builder-01-1.onrender.com",
+        "X-Title": "Agent Builder 01",
+        "Content-Type": "application/json",
+    }
+    data = {
+        "model": AI_MODEL,
+        "messages": [
+            {"role": "system", "content": "You are a helpful assistant."},
+            {"role": "user", "content": payload.prompt},
+        ],
+        "temperature": payload.temperature,
+    }
+    async with httpx.AsyncClient(timeout=60) as client:
+        r = await client.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=data)
+    if r.status_code != 200:
+        return JSONResponse(status_code=r.status_code, content={"error": "openrouter_error", "detail": r.text})
+    resp = r.json()
+    answer = (resp.get("choices") or [{}])[0].get("message", {}).get("content", "") or ""
+    await _save_query(user, payload.prompt, answer)
+    return {"answer": answer, "model": AI_MODEL}
 
 @router.post("/stream")
 async def ai_stream(payload: PromptPayload, user: AuthedUser = Depends(get_current_user)):
-    if not OPENAI_API_KEY:
-        raise HTTPException(status_code=500, detail="Server nema OPENAI_API_KEY")
+    headers = {
+        "Authorization": f"Bearer {OPENROUTER_KEY}",
+        "HTTP-Referer": "https://agent-builder-01-1.onrender.com",
+        "X-Title": "Agent Builder 01",
+        "Content-Type": "application/json",
+    }
+    data = {
+        "model": AI_MODEL,
+        "messages": [
+            {"role": "system", "content": "You are a helpful assistant."},
+            {"role": "user", "content": payload.prompt},
+        ],
+        "temperature": payload.temperature,
+        "stream": True,
+    }
 
-    async def event_generator():
+    async def event_gen():
         collected = ""
-        try:
-            async with httpx.AsyncClient(timeout=None) as client:
-                async with client.stream(
-                    "POST",
-                    "https://api.openai.com/v1/chat/completions",
-                    headers={
-                        "Authorization": f"Bearer {OPENAI_API_KEY}",
-                        "Content-Type": "application/json",
-                    },
-                    json={
-                        "model": AI_MODEL,
-                        "messages": [
-                            {"role": "system", "content": "You are a helpful assistant."},
-                            {"role": "user", "content": payload.prompt},
-                        ],
-                        "temperature": payload.temperature,
-                        "stream": True,
-                    },
-                ) as r:
-                    if r.status_code != 200:
-                        yield {"event": "error", "data": json.dumps({"error": await r.aread().decode()})}
-                        return
-                    async for line in r.aiter_lines():
-                        if not line:
-                            continue
-                        if line.startswith("data:"):
-                            data = line[5:].strip()
-                            if data == "[DONE]":
-                                if collected:
-                                    await _save_query(user, payload.prompt, collected)
-                                yield {"event": "end", "data": "{}"}
-                                break
-                            try:
-                                obj = json.loads(data)
-                                delta = ((obj.get("choices") or [{}])[0].get("delta") or {}).get("content")
-                                if delta:
-                                    collected += delta
-                                    yield {"event": "token", "data": json.dumps({"token": delta})}
-                            except Exception:
-                                continue
-        except Exception as e:
-            yield {"event": "error", "data": json.dumps({"error": str(e)})}
+        async with httpx.AsyncClient(timeout=None) as client:
+            async with client.stream("POST", "https://openrouter.ai/api/v1/chat/completions", headers=headers, json=data) as r:
+                async for line in r.aiter_lines():
+                    if not line or not line.startswith("data:"):
+                        continue
+                    chunk = line[5:].strip()
+                    if chunk == "[DONE]":
+                        await _save_query(user, payload.prompt, collected)
+                        yield {"event": "end", "data": "{}"}
+                        break
+                    try:
+                        part = json.loads(chunk)
+                        delta = ((part.get("choices") or [{}])[0].get("delta") or {}).get("content")
+                        if delta:
+                            collected += delta
+                            yield {"event": "token", "data": json.dumps({"token": delta})}
+                    except Exception:
+                        continue
 
-    return EventSourceResponse(event_generator(), media_type="text/event-stream")
+    return EventSourceResponse(event_gen(), media_type="text/event-stream")
