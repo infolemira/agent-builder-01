@@ -33,15 +33,17 @@
   </div>
 
   <div class="card">
-    <h3>2) Login</h3>
+    <h3>2) Signup & Login</h3>
     <label>Email</label>
     <input id="email" value="test@example.com" />
     <label>Password</label>
     <input id="password" type="password" value="Test1234!" />
     <div class="row">
+      <button id="btn-signup">POST /auth/signup</button>
       <button id="btn-login">POST /auth/login</button>
     </div>
     <p class="muted">Access token (skraćen): <code id="token-short">-</code></p>
+    <pre id="out-auth"></pre>
   </div>
 
   <div class="card">
@@ -60,88 +62,52 @@
 
 <script>
 const BASE = document.getElementById('base-url').textContent.trim();
-
-function show(el, data){
-  el.textContent = (typeof data === 'string') ? data : JSON.stringify(data, null, 2);
-}
-
-async function getJSON(path){
-  const r = await fetch(BASE + path);
-  return {status: r.status, body: await r.json().catch(()=>({}))};
-}
+function show(el, data){ el.textContent = (typeof data === 'string') ? data : JSON.stringify(data, null, 2); }
+async function getJSON(path){ const r = await fetch(BASE + path); return {status:r.status, body:await r.json().catch(()=>({}))}; }
 
 document.getElementById('btn-health').onclick = async () => {
-  const {status, body} = await getJSON('/health');
-  show(document.getElementById('out-health'), {status, body});
+  const {status, body} = await getJSON('/health'); show(document.getElementById('out-health'), {status, body});
 };
-
 document.getElementById('btn-ai-health').onclick = async () => {
-  const {status, body} = await getJSON('/ai/health-check');
-  show(document.getElementById('out-health'), {status, body});
+  const {status, body} = await getJSON('/ai/health-check'); show(document.getElementById('out-health'), {status, body});
 };
 
 let token = null;
-
-document.getElementById('btn-login').onclick = async () => {
+async function signupOrLogin(path){
   const email = document.getElementById('email').value.trim();
   const password = document.getElementById('password').value;
-  const r = await fetch(BASE + '/auth/login', {
-    method: 'POST',
-    headers: {'Content-Type':'application/json'},
-    body: JSON.stringify({email, password})
-  });
+  const r = await fetch(BASE + path, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({email, password}) });
   const body = await r.json().catch(()=>({}));
-  token = body.access_token || body.accessToken || null;
-  document.getElementById('token-short').textContent = token ? token.slice(0,16) + '…' : '(no token)';
-  show(document.getElementById('out-answer'), {status:r.status, body});
-};
+  show(document.getElementById('out-auth'), {status:r.status, body});
+  if(path==='/auth/login'){
+    token = body.access_token || body.accessToken || null;
+    document.getElementById('token-short').textContent = token ? token.slice(0,16)+'…' : '(no token)';
+  }
+}
+
+document.getElementById('btn-signup').onclick = ()=> signupOrLogin('/auth/signup');
+document.getElementById('btn-login').onclick = ()=> signupOrLogin('/auth/login');
 
 document.getElementById('btn-query').onclick = async () => {
-  if(!token){ alert('Prvo uradi login.'); return; }
+  if(!token){ alert('Prvo login.'); return; }
   const prompt = document.getElementById('prompt').value;
-  const r = await fetch(BASE + '/ai/query', {
-    method: 'POST',
-    headers: {
-      'Content-Type':'application/json',
-      'Authorization': 'Bearer ' + token
-    },
-    body: JSON.stringify({prompt})
-  });
+  const r = await fetch(BASE + '/ai/query', { method:'POST', headers:{'Content-Type':'application/json','Authorization':'Bearer '+token}, body: JSON.stringify({prompt}) });
   const body = await r.json().catch(()=>({}));
   show(document.getElementById('out-answer'), body);
 };
 
 document.getElementById('btn-stream').onclick = async () => {
-  if(!token){ alert('Prvo uradi login.'); return; }
+  if(!token){ alert('Prvo login.'); return; }
   const prompt = document.getElementById('prompt').value;
-  const out = document.getElementById('out-stream');
-  out.textContent = '';
-  const r = await fetch(BASE + '/ai/stream', {
-    method: 'POST',
-    headers: {
-      'Content-Type':'application/json',
-      'Authorization': 'Bearer ' + token
-    },
-    body: JSON.stringify({prompt})
-  });
-  const reader = r.body.getReader();
-  const decoder = new TextDecoder();
-  while(true){
-    const {done, value} = await reader.read();
-    if(done) break;
+  const out = document.getElementById('out-stream'); out.textContent = '';
+  const r = await fetch(BASE + '/ai/stream', { method:'POST', headers:{'Content-Type':'application/json','Authorization':'Bearer '+token}, body: JSON.stringify({prompt}) });
+  const reader = r.body.getReader(); const decoder = new TextDecoder();
+  while(true){ const {done, value} = await reader.read(); if(done) break;
     const chunk = decoder.decode(value, {stream:true});
-    // SSE lines: data: {...}
     chunk.split('\n').forEach(line=>{
-      line = line.trim();
-      if(line.startsWith('data:')){
-        const data = line.slice(5).trim();
-        if(data && data !== '[DONE]'){
-          try {
-            const obj = JSON.parse(data);
-            if(obj.token){ out.textContent += obj.token; }
-          } catch(e){}
-        }
-      }
+      line=line.trim(); if(line.startsWith('data:')){ const data=line.slice(5).trim(); if(data && data!=='[DONE]'){
+        try{ const obj=JSON.parse(data); if(obj.token){ out.textContent += obj.token; } }catch(e){}
+      }}
     });
   }
 };
