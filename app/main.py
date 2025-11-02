@@ -5,6 +5,7 @@ from pydantic import BaseModel
 from typing import Optional
 from supabase_service import supabase
 from app.auth import get_current_user, AuthedUser
+from app.history import router as history_router
 from app.ai import router as ai_router
 import os
 
@@ -16,6 +17,9 @@ app = FastAPI(
 
 
 
+
+# -- HISTORY ROUTES --
+app.include_router(history_router)
 # -- AI ROUTES --
 app.include_router(ai_router)
 # ---------- CORS ----------
