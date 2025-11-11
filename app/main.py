@@ -1,7 +1,7 @@
 # app/main.py
 from fastapi import FastAPI, Depends, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, HTMLResponse
 from pydantic import BaseModel
 from typing import Optional, List
 import os
@@ -12,7 +12,7 @@ from app.auth import get_current_user, AuthedUser
 # --- app meta ---
 APP_NAME = os.getenv("APP_NAME", "Agent Builder 01 — FastAPI + Supabase")
 APP_DESC = "API service with Supabase auth, RLS-aware CRUD, AI routes and history"
-APP_VER  = "0.2.2"
+APP_VER  = "0.2.3"
 
 app = FastAPI(title=APP_NAME, version=APP_VER, description=APP_DESC)
 
@@ -41,7 +41,6 @@ def _admin_emails() -> List[str]:
 @app.middleware("http")
 async def admin_guard(request: Request, call_next):
     path = request.url.path
-    # Zaključaj AI funkcionalnosti za ne-admin korisnike:
     if path.startswith("/ai"):
         admins = _admin_emails()
         if admins:  # ako lista nije prazna, provjeri token/email
@@ -84,10 +83,7 @@ def health():
 
 @app.get("/db/health")
 def db_health():
-    """
-    DB health: zove public.db_ping() (grant za anon).
-    Ako vrati 'pong' -> OK.
-    """
+    """DB health preko RPC public.db_ping() (grant: anon)."""
     try:
         res = supabase.rpc("db_ping").execute()
         data = getattr(res, "data", None)
@@ -97,9 +93,19 @@ def db_health():
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"db_error: {str(e)}")
 
+# ---------- ROOT + UI ----------
 @app.get("/")
 def root():
     return {"message": "Agent Builder 01 API is running 🚀"}
+
+@app.get("/ui", response_class=HTMLResponse)
+def serve_ui():
+    """Vrati statički index.html iz root-a repozitorija."""
+    try:
+        with open("index.html", "r", encoding="utf-8") as f:
+            return HTMLResponse(f.read())
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="index.html not found")
 
 # ---------- AUTH ----------
 @app.post("/auth/signup")
