@@ -1,179 +1,172 @@
-# app/main.py
-from fastapi import FastAPI, Depends, HTTPException, Request
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, HTMLResponse
-from pydantic import BaseModel
+# app/ai.py — OpenRouter + history + export (sa max_tokens limiterom)
+from fastapi import APIRouter, HTTPException, Depends
+from fastapi.responses import JSONResponse, Response
+from sse_starlette.sse import EventSourceResponse
+from pydantic import BaseModel, Field
 from typing import Optional, List
-import os
+import os, json, httpx, csv, io
 
-from supabase_service import supabase
 from app.auth import get_current_user, AuthedUser
+from supabase_service import supabase
 
-# --- app meta ---
-APP_NAME = os.getenv("APP_NAME", "Agent Builder 01 — FastAPI + Supabase")
-APP_DESC = "API service with Supabase auth, RLS-aware CRUD, AI routes and history"
-APP_VER  = "0.2.3"
+router = APIRouter(prefix="/ai", tags=["ai"])
 
-app = FastAPI(title=APP_NAME, version=APP_VER, description=APP_DESC)
+OPENROUTER_KEY = os.getenv("OPENROUTER_API_KEY")
+DEFAULT_MODEL = os.getenv("AI_MODEL", "openrouter/auto")
+APP_URL = os.getenv("APP_URL", "https://agent-builder-01-1.onrender.com")
+APP_NAME = os.getenv("APP_NAME", "she-ona")
+DEFAULT_MAX_TOKENS = int(os.getenv("AI_MAX_TOKENS", "512"))  # siguran limit
 
-# ---------- CORS ----------
-_frontends = os.getenv("FRONTEND_ORIGINS", "*")
-if _frontends.strip() == "*":
-    allow_origins = ["*"]; allow_credentials = False
-else:
-    allow_origins = [o.strip() for o in _frontends.split(",") if o.strip()]
-    allow_credentials = True
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=allow_origins,
-    allow_credentials=allow_credentials,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# ---------- ADMIN LIST ----------
-def _admin_emails() -> List[str]:
-    raw = os.getenv("ADMIN_EMAILS", "")
-    return [e.strip().lower() for e in raw.split(",") if e.strip()]
-
-# ---------- ADMIN MIDDLEWARE (štiti /ai i /ai/history rute) ----------
-@app.middleware("http")
-async def admin_guard(request: Request, call_next):
-    path = request.url.path
-    if path.startswith("/ai"):
-        admins = _admin_emails()
-        if admins:  # ako lista nije prazna, provjeri token/email
-            auth = request.headers.get("authorization", "")
-            if not auth.lower().startswith("bearer "):
-                return JSONResponse({"detail": "Admin token required"}, status_code=401)
-            token = auth.split(" ", 1)[1].strip()
-            try:
-                res = supabase.auth.get_user(token)
-                email = (res.user.email or "").lower() if res.user else ""
-            except Exception:
-                email = ""
-            if email not in admins:
-                return JSONResponse({"detail": "Forbidden (admins only)"}, status_code=403)
-    return await call_next(request)
-
-# ---------- MODELI ----------
-class SignupPayload(BaseModel):
-    email: str
-    password: str
-
-class LoginPayload(BaseModel):
-    email: str
-    password: str
-
-class ItemCreate(BaseModel):
-    title: str
-    description: Optional[str] = None
-    done: bool = False
-
-class ItemUpdate(BaseModel):
-    title: Optional[str] = None
-    description: Optional[str] = None
-    done: Optional[bool] = None
-
-# ---------- HEALTH ----------
-@app.get("/health")
-def health():
-    return {"status": "ok", "app": APP_NAME, "version": APP_VER}
-
-@app.get("/db/health")
-def db_health():
-    """DB health preko RPC public.db_ping() (grant: anon)."""
-    try:
-        res = supabase.rpc("db_ping").execute()
-        data = getattr(res, "data", None)
-        if data == "pong" or data == ["pong"]:
-            return {"db": "ok"}
-        raise RuntimeError(f"unexpected: {data}")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"db_error: {str(e)}")
-
-# ---------- ROOT + UI ----------
-@app.get("/")
-def root():
-    return {"message": "Agent Builder 01 API is running 🚀"}
-
-@app.get("/ui", response_class=HTMLResponse)
-def serve_ui():
-    """Vrati statički index.html iz root-a repozitorija."""
-    try:
-        with open("index.html", "r", encoding="utf-8") as f:
-            return HTMLResponse(f.read())
-    except FileNotFoundError:
-        raise HTTPException(status_code=404, detail="index.html not found")
-
-# ---------- AUTH ----------
-@app.post("/auth/signup")
-def signup(payload: SignupPayload):
-    res = supabase.auth.sign_up({"email": payload.email, "password": payload.password})
-    if res.user is None:
-        raise HTTPException(status_code=400, detail="Signup failed")
-    return {"message": "Signup successful", "user": res.user}
-
-@app.post("/auth/login")
-def login(payload: LoginPayload):
-    try:
-        res = supabase.auth.sign_in_with_password({"email": payload.email, "password": payload.password})
-    except Exception:
-        raise HTTPException(status_code=401, detail="Invalid login credentials")
-    if res.session is None:
-        raise HTTPException(status_code=401, detail="Invalid login credentials")
+def _headers():
     return {
-        "access_token": res.session.access_token,
-        "token_type": "bearer",
-        "expires_in": res.session.expires_in,
-        "user": res.user,
+        "Authorization": f"Bearer {OPENROUTER_KEY}",
+        "HTTP-Referer": APP_URL,
+        "X-Title": APP_NAME,
+        "Content-Type": "application/json",
     }
 
-# ---------- ITEMS (CRUD) ----------
-@app.post("/items")
-def create_item(item: ItemCreate, user: AuthedUser = Depends(get_current_user)):
+class PromptPayload(BaseModel):
+    prompt: str = Field(..., min_length=1)
+    temperature: Optional[float] = Field(0.2, ge=0.0, le=1.0)
+    model: Optional[str] = Field(None, description="npr. openrouter/auto ili qwen/qwen-2.5-7b-instruct:free")
+    max_tokens: Optional[int] = Field(None, ge=32, le=4096, description="maks. izlaznih tokena (default 512)")
+
+async def _save_query(user: AuthedUser, prompt: str, response: str) -> None:
+    try:
+        supabase.postgrest.auth(user.token)
+        supabase.table("queries").insert({
+            "user_id": user.id,
+            "prompt": prompt,
+            "response": response
+        }).execute()
+    except Exception:
+        pass
+
+@router.get("/health-check")
+def health_check():
+    ok = bool(OPENROUTER_KEY)
+    return {"ok": ok, "provider": "openrouter", "default_model": DEFAULT_MODEL, "default_max_tokens": DEFAULT_MAX_TOKENS}
+
+@router.post("/query")
+async def ai_query(payload: PromptPayload, user: AuthedUser = Depends(get_current_user)):
+    if not OPENROUTER_KEY:
+        raise HTTPException(status_code=500, detail="Server nema OPENROUTER_API_KEY")
+    model = (payload.model or DEFAULT_MODEL).strip()
+    max_tokens = payload.max_tokens or DEFAULT_MAX_TOKENS
+
+    data = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": "You are a helpful assistant."},
+            {"role": "user", "content": payload.prompt},
+        ],
+        "temperature": payload.temperature,
+        "max_tokens": max_tokens,  # <= ključna promjena
+    }
+    async with httpx.AsyncClient(timeout=60) as client:
+        r = await client.post("https://openrouter.ai/api/v1/chat/completions", headers=_headers(), json=data)
+    if r.status_code != 200:
+        return JSONResponse(status_code=r.status_code, content={"error": "openrouter_error", "detail": r.text})
+    resp = r.json()
+    answer = (resp.get("choices") or [{}])[0].get("message", {}).get("content", "") or ""
+    await _save_query(user, payload.prompt, answer)
+    return {"answer": answer, "model": model}
+
+@router.post("/stream")
+async def ai_stream(payload: PromptPayload, user: AuthedUser = Depends(get_current_user)):
+    if not OPENROUTER_KEY:
+        raise HTTPException(status_code=500, detail="Server nema OPENROUTER_API_KEY")
+    model = (payload.model or DEFAULT_MODEL).strip()
+    max_tokens = payload.max_tokens or DEFAULT_MAX_TOKENS
+
+    data = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": "You are a helpful assistant."},
+            {"role": "user", "content": payload.prompt},
+        ],
+        "temperature": payload.temperature,
+        "max_tokens": max_tokens,   # <= i u streamu
+        "stream": True,
+    }
+
+    async def event_gen():
+        collected = ""
+        async with httpx.AsyncClient(timeout=None) as client:
+            async with client.stream("POST", "https://openrouter.ai/api/v1/chat/completions", headers=_headers(), json=data) as r:
+                if r.status_code != 200:
+                    yield {"event": "error", "data": json.dumps({"error": await r.aread().decode()})}
+                    return
+                async for line in r.aiter_lines():
+                    if not line or not line.startswith("data:"):
+                        continue
+                    chunk = line[5:].strip()
+                    if chunk == "[DONE]":
+                        await _save_query(user, payload.prompt, collected)
+                        yield {"event": "end", "data": "{}"}
+                        break
+                    try:
+                        part = json.loads(chunk)
+                        delta = ((part.get("choices") or [{}])[0].get("delta") or {}).get("content")
+                        if delta:
+                            collected += delta
+                            yield {"event": "token", "data": json.dumps({"token": delta})}
+                    except Exception:
+                        continue
+    return EventSourceResponse(event_gen(), media_type="text/event-stream")
+
+@router.get("/history")
+def history_list(user: AuthedUser = Depends(get_current_user)):
     supabase.postgrest.auth(user.token)
-    data = {"title": item.title, "description": item.description, "done": item.done, "user_id": user.id}
-    res = supabase.table("items").insert(data).execute()
-    if not res.data:
-        raise HTTPException(status_code=400, detail="Failed to create item")
-    return {"message": "Item created successfully", "item": res.data[0]}
+    res = supabase.table("queries").select("*").eq("user_id", user.id).order("created_at", desc=True).execute()
+    return {"items": res.data or []}
 
-@app.get("/items")
-def list_items(user: AuthedUser = Depends(get_current_user)):
+@router.delete("/history")
+def history_delete_all(user: AuthedUser = Depends(get_current_user)):
     supabase.postgrest.auth(user.token)
-    res = supabase.table("items").select("*").eq("user_id", user.id).order("created_at", desc=True).execute()
-    return res.data
+    supabase.table("queries").delete().eq("user_id", user.id).execute()
+    return {"deleted": "all"}
 
-@app.patch("/items/{item_id}")
-def update_item(item_id: str, item: ItemUpdate, user: AuthedUser = Depends(get_current_user)):
+@router.delete("/history/{row_id}")
+def history_delete_one(row_id: str, user: AuthedUser = Depends(get_current_user)):
     supabase.postgrest.auth(user.token)
-    update_data = item.dict(exclude_unset=True)
-    if not update_data:
-        raise HTTPException(status_code=400, detail="No fields to update")
-    res = supabase.table("items").update(update_data).eq("id", item_id).eq("user_id", user.id).execute()
-    if not res.data:
-        raise HTTPException(status_code=404, detail="Item not found or not yours")
-    return {"message": "Item updated", "item": res.data[0]}
+    supabase.table("queries").delete().eq("id", row_id).eq("user_id", user.id).execute()
+    return {"deleted": row_id}
 
-@app.delete("/items/{item_id}")
-def delete_item(item_id: str, user: AuthedUser = Depends(get_current_user)):
+@router.get("/history/export.json")
+def history_export_json(user: AuthedUser = Depends(get_current_user)):
     supabase.postgrest.auth(user.token)
-    res = supabase.table("items").delete().eq("id", item_id).eq("user_id", user.id).execute()
-    if res.data == []:
-        raise HTTPException(status_code=404, detail="Item not found or not yours")
-    return {"message": "Item deleted", "id": item_id}
+    res = (
+        supabase.table("queries")
+        .select("id,prompt,response,created_at")
+        .eq("user_id", user.id)
+        .order("created_at", desc=True)
+        .execute()
+    )
+    return JSONResponse(
+        content=(res.data or []),
+        headers={"Content-Disposition": "attachment; filename=history.json"},
+        media_type="application/json",
+    )
 
-# ---------- AI & HISTORY ROUTERS ----------
-try:
-    from app.ai import router as ai_router
-    app.include_router(ai_router)
-except Exception:
-    pass
-
-try:
-    from app.history import router as history_router
-    app.include_router(history_router)
-except Exception:
-    pass
+@router.get("/history/export.csv")
+def history_export_csv(user: AuthedUser = Depends(get_current_user)):
+    supabase.postgrest.auth(user.token)
+    res = (
+        supabase.table("queries")
+        .select("id,prompt,response,created_at")
+        .eq("user_id", user.id)
+        .order("created_at", desc=True)
+        .execute()
+    )
+    rows = res.data or []
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(["id", "created_at", "prompt", "response"])
+    for r in rows:
+        writer.writerow([r.get("id",""), r.get("created_at",""), r.get("prompt",""), r.get("response","")])
+    return Response(
+        content=buf.getvalue().encode("utf-8"),
+        headers={"Content-Disposition": "attachment; filename=history.csv"},
+        media_type="text/csv; charset=utf-8",
+    )
