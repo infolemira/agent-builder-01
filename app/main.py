@@ -1,8 +1,9 @@
 # app/main.py
-from fastapi import FastAPI, Depends, HTTPException
+from fastapi import FastAPI, Depends, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
-from typing import Optional
+from typing import Optional, List
 import os
 
 from supabase_service import supabase
@@ -11,7 +12,7 @@ from app.auth import get_current_user, AuthedUser
 # --- app meta ---
 APP_NAME = os.getenv("APP_NAME", "Agent Builder 01 — FastAPI + Supabase")
 APP_DESC = "API service with Supabase auth, RLS-aware CRUD, AI routes and history"
-APP_VER  = "0.2.1"
+APP_VER  = "0.2.2"
 
 app = FastAPI(title=APP_NAME, version=APP_VER, description=APP_DESC)
 
@@ -30,6 +31,32 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# ---------- ADMIN LIST ----------
+def _admin_emails() -> List[str]:
+    raw = os.getenv("ADMIN_EMAILS", "")
+    return [e.strip().lower() for e in raw.split(",") if e.strip()]
+
+# ---------- ADMIN MIDDLEWARE (štiti /ai i /ai/history rute) ----------
+@app.middleware("http")
+async def admin_guard(request: Request, call_next):
+    path = request.url.path
+    # Zaključaj AI funkcionalnosti za ne-admin korisnike:
+    if path.startswith("/ai"):
+        admins = _admin_emails()
+        if admins:  # ako lista nije prazna, provjeri token/email
+            auth = request.headers.get("authorization", "")
+            if not auth.lower().startswith("bearer "):
+                return JSONResponse({"detail": "Admin token required"}, status_code=401)
+            token = auth.split(" ", 1)[1].strip()
+            try:
+                res = supabase.auth.get_user(token)
+                email = (res.user.email or "").lower() if res.user else ""
+            except Exception:
+                email = ""
+            if email not in admins:
+                return JSONResponse({"detail": "Forbidden (admins only)"}, status_code=403)
+    return await call_next(request)
 
 # ---------- MODELI ----------
 class SignupPayload(BaseModel):
