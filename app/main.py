@@ -11,7 +11,7 @@ from app.auth import get_current_user, AuthedUser
 # --- app meta ---
 APP_NAME = os.getenv("APP_NAME", "Agent Builder 01 — FastAPI + Supabase")
 APP_DESC = "API service with Supabase auth, RLS-aware CRUD, AI routes and history"
-APP_VER  = "0.2.0"
+APP_VER  = "0.2.1"
 
 app = FastAPI(title=APP_NAME, version=APP_VER, description=APP_DESC)
 
@@ -58,12 +58,15 @@ def health():
 @app.get("/db/health")
 def db_health():
     """
-    Jednostavan DB health: pokuša SELECT 1; ako uspije -> ok.
-    (koristi Postgrest kanal preko Supabase klijenta)
+    DB health: zove public.db_ping() (grant za anon).
+    Ako vrati 'pong' -> OK.
     """
     try:
-        supabase.table("pg_timezone_names").select("name").limit(1).execute()
-        return {"db": "ok"}
+        res = supabase.rpc("db_ping").execute()
+        data = getattr(res, "data", None)
+        if data == "pong" or data == ["pong"]:
+            return {"db": "ok"}
+        raise RuntimeError(f"unexpected: {data}")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"db_error: {str(e)}")
 
@@ -98,12 +101,7 @@ def login(payload: LoginPayload):
 @app.post("/items")
 def create_item(item: ItemCreate, user: AuthedUser = Depends(get_current_user)):
     supabase.postgrest.auth(user.token)
-    data = {
-        "title": item.title,
-        "description": item.description,
-        "done": item.done,
-        "user_id": user.id,
-    }
+    data = {"title": item.title, "description": item.description, "done": item.done, "user_id": user.id}
     res = supabase.table("items").insert(data).execute()
     if not res.data:
         raise HTTPException(status_code=400, detail="Failed to create item")
@@ -112,13 +110,7 @@ def create_item(item: ItemCreate, user: AuthedUser = Depends(get_current_user)):
 @app.get("/items")
 def list_items(user: AuthedUser = Depends(get_current_user)):
     supabase.postgrest.auth(user.token)
-    res = (
-        supabase.table("items")
-        .select("*")
-        .eq("user_id", user.id)
-        .order("created_at", desc=True)
-        .execute()
-    )
+    res = supabase.table("items").select("*").eq("user_id", user.id).order("created_at", desc=True).execute()
     return res.data
 
 @app.patch("/items/{item_id}")
@@ -127,13 +119,7 @@ def update_item(item_id: str, item: ItemUpdate, user: AuthedUser = Depends(get_c
     update_data = item.dict(exclude_unset=True)
     if not update_data:
         raise HTTPException(status_code=400, detail="No fields to update")
-    res = (
-        supabase.table("items")
-        .update(update_data)
-        .eq("id", item_id)
-        .eq("user_id", user.id)
-        .execute()
-    )
+    res = supabase.table("items").update(update_data).eq("id", item_id).eq("user_id", user.id).execute()
     if not res.data:
         raise HTTPException(status_code=404, detail="Item not found or not yours")
     return {"message": "Item updated", "item": res.data[0]}
@@ -141,13 +127,7 @@ def update_item(item_id: str, item: ItemUpdate, user: AuthedUser = Depends(get_c
 @app.delete("/items/{item_id}")
 def delete_item(item_id: str, user: AuthedUser = Depends(get_current_user)):
     supabase.postgrest.auth(user.token)
-    res = (
-        supabase.table("items")
-        .delete()
-        .eq("id", item_id)
-        .eq("user_id", user.id)
-        .execute()
-    )
+    res = supabase.table("items").delete().eq("id", item_id).eq("user_id", user.id).execute()
     if res.data == []:
         raise HTTPException(status_code=404, detail="Item not found or not yours")
     return {"message": "Item deleted", "id": item_id}
